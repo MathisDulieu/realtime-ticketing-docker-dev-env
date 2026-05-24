@@ -1,0 +1,12 @@
+[
+  {
+    "_id": "event-001",
+    "name": "Rock Concert London",
+    "description": "An incredible rock concert in London"
+  },
+  {
+    "_id": "event-002",
+    "name": "Jazz Festival Paris",
+    "description": "The best jazz festival in Paris"
+  }
+]

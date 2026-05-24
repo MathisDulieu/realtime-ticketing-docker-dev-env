@@ -1,0 +1,254 @@
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - ticketing-network
+    healthcheck:
+      test: [ "CMD-SHELL", "echo srvr | nc 127.0.0.1 2181 | grep Zookeeper" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - ticketing-network
+    healthcheck:
+      test: [ "CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  kafka-topic-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka-topic-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init-kafka-topics.sh:/scripts/init-kafka-topics.sh
+    command: [ "sh", "/scripts/init-kafka-topics.sh" ]
+    networks:
+      - ticketing-network
+
+  akhq:
+    image: tchiotludo/akhq:0.24.0
+    container_name: akhq
+    depends_on:
+      kafka-topic-init:
+        condition: service_completed_successfully
+    ports:
+      - "8090:8080"
+    volumes:
+      - ./config/akhq/application.yml:/app/application.yml
+    networks:
+      - ticketing-network
+
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    command: [ "mongod", "--bind_ip_all" ]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+    volumes:
+      - mongodb-data:/data/db
+    networks:
+      - ticketing-network
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  mongo-init:
+    image: mongo:7.0
+    container_name: mongo-init
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init-mongo.sh:/scripts/init-mongo.sh
+    command: [ "sh", "/scripts/init-mongo.sh" ]
+    networks:
+      - ticketing-network
+
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: mongo-express
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+    ports:
+      - "8091:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: admin
+      ME_CONFIG_MONGODB_URL: mongodb://admin:admin@mongodb:27017/
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    networks:
+      - ticketing-network
+
+  mongo-seed:
+    image: mongo:7.0
+    container_name: mongo-seed
+    profiles:
+      - seed
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./scripts/seed-mongo.sh:/scripts/seed-mongo.sh
+      - ./seed-data:/seed-data
+    command: [ "sh", "/scripts/seed-mongo.sh" ]
+    networks:
+      - ticketing-network
+
+  nexus:
+    image: sonatype/nexus3:3.68.1
+    container_name: nexus
+    user: "0:0"
+    ports:
+      - "8092:8081"
+    volumes:
+      - nexus-data:/nexus-data
+      - ./config/nexus/nexus.properties:/nexus-data/etc/nexus.properties
+    networks:
+      - ticketing-network
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8081/service/rest/v1/status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  nexus-init:
+    image: curlimages/curl:8.10.1
+    container_name: nexus-init
+    depends_on:
+      nexus:
+        condition: service_healthy
+    volumes:
+      - nexus-data:/nexus-data
+      - ./scripts/init-nexus.sh:/scripts/init-nexus.sh
+    command: [ "sh", "/scripts/init-nexus.sh" ]
+    networks:
+      - ticketing-network
+
+  library-deployer:
+    image: maven:3.9.9-eclipse-temurin-21-alpine
+    container_name: library-deployer
+    depends_on:
+      nexus-init:
+        condition: service_completed_successfully
+    environment:
+      NEXUS_URL: http://nexus:8081
+      NEXUS_USERNAME: admin
+      NEXUS_PASSWORD: admin
+      LIBRARY_VERSION: 1.0.0
+    volumes:
+      - maven-cache:/root/.m2
+      - /c/projets/realtime-ticketing-library:/tmp/library
+      - ./config/maven/settings.xml:/root/.m2/settings.xml
+      - ./deployment-report:/reports
+      - ./scripts/deploy-library.sh:/scripts/deploy-library.sh
+    command: [ "sh", "/scripts/deploy-library.sh" ]
+    networks:
+      - ticketing-network
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - ticketing-network
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ticketing-dashboard.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - ticketing-network
+
+  deployment-reporter:
+    image: docker:27-cli
+    container_name: deployment-reporter
+    depends_on:
+      - zookeeper
+      - kafka
+      - kafka-topic-init
+      - akhq
+      - mongodb
+      - mongo-init
+      - mongo-express
+      - nexus
+      - nexus-init
+      - library-deployer
+      - prometheus
+      - grafana
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./deployment-report:/reports
+      - ./scripts/generate-report.sh:/scripts/generate-report.sh
+    command: [ "sh", "/scripts/generate-report.sh" ]
+    networks:
+      - ticketing-network
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  mongodb-data:
+  nexus-data:
+  maven-cache:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  ticketing-network:
+    driver: bridge

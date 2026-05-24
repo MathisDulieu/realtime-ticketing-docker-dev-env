@@ -1,0 +1,14 @@
+[
+  {
+    "_id": "inventory-001",
+    "eventId": "event-001",
+    "totalTickets": 1000,
+    "availableTickets": 1000
+  },
+  {
+    "_id": "inventory-002",
+    "eventId": "event-002",
+    "totalTickets": 500,
+    "availableTickets": 500
+  }
+]

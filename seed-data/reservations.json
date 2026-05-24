@@ -1,0 +1,12 @@
+[
+  {
+    "_id": "reservation-001",
+    "eventId": "event-001",
+    "userId": "user-001"
+  },
+  {
+    "_id": "reservation-002",
+    "eventId": "event-002",
+    "userId": "user-002"
+  }
+]
